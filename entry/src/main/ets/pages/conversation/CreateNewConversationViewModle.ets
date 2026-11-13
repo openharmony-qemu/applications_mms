@@ -230,6 +230,13 @@ export default class CreateNewConversationViewModle {
   public isSend: boolean = false
   public isTextAsMms: boolean = false;
   public hasAttachment: boolean = false;
+  public localDraftSaving: boolean = false;
+  private localDraftTask: Promise<boolean> | null = null;
+  private localDraftGeneration: number = 0;
+  private localDraftStopped: boolean = false;
+  private localDraftOptedIn: boolean = false;
+  private localDraftMessageId: number = 0;
+  private localDraftTelephone: string = '';
   public draftModel: DraftModel = new DraftModel()
   public newEmojiLength: number = 0;
   get canSendMmsMessage() {
@@ -251,7 +258,18 @@ export default class CreateNewConversationViewModle {
       || deliveryReportSwitch == common.DELIVERY_REPORTS.SMS_AND_MMS;
   }
 
-  onInit(context: Context, pageInfos: NavPathStack) {
+  onInit(context: Context, pageInfos: NavPathStack): void {
+    if (this.localDraftTask !== null) {
+      this.stopLocalTextDraft();
+      this.localDraftTask.then((): void => { this.onInit(context, pageInfos); });
+      return;
+    }
+    // A route initialization starts a fresh editing epoch, unlike onShow.
+    this.localDraftGeneration++;
+    this.localDraftStopped = false;
+    this.localDraftOptedIn = false;
+    this.localDraftMessageId = 0;
+    this.localDraftTelephone = '';
     HiLog.i(TAG, 'onInit');
     this.pageInfos = pageInfos;
     this.isSmartOpen = SharedPreferencesUtils.getFromPreferences('isOpenSmart', false) as boolean;
@@ -551,6 +569,7 @@ export default class CreateNewConversationViewModle {
   }
 
   release() {
+    this.stopLocalTextDraft();
     this.textValue = '';
     this.receiveContactValue = '';
     this.isDraft = false;
@@ -831,7 +850,99 @@ export default class CreateNewConversationViewModle {
     }
   }
 
-  setDraftModel(callback: Function, isNeedToSetNull: boolean = true) {
+  canPersistLocalTextDraft(): boolean {
+    const contacts = this.getSelectContacts();
+    const telephone = this.receiveContactValue || (contacts.length === 1 ? contacts[0].telephone : '');
+    const blank = this.textValue === '' && !this.isDraft && this.localDraftMessageId === 0;
+    return !this.localDraftStopped && !this.isSend && !this.isRcsMms && !this.isEditMms &&
+      !this.isTextAsMms && this.mAttachAreaCtrl.mmDisplaySource.length === 0 && contacts.length <= 1 &&
+      (blank || TelephoneUtil.isPhoneNumber(telephone)) &&
+      (this.localDraftMessageId === 0 || TelephoneUtil.dealTelephoneSort(telephone) === this.localDraftTelephone);
+  }
+
+  stopLocalTextDraft(): void {
+    this.localDraftStopped = true;
+    this.localDraftGeneration++;
+  }
+
+  skipPausedDraftSave(): boolean {
+    return this.localDraftSaving || (this.localDraftOptedIn && this.localDraftStopped);
+  }
+
+  persistLocalTextDraft(): Promise<boolean> {
+    this.localDraftOptedIn = true;
+    if (this.localDraftTask !== null) {
+      return this.localDraftTask;
+    }
+    this.localDraftSaving = true;
+    // Defer snapshot construction until the task is installed; even a synchronous
+    // snapshot failure must release the one-save gate.
+    this.localDraftTask = Promise.resolve().then(() => this.persistLocalTextDraftNow()).finally(() => {
+      this.localDraftSaving = false;
+      this.localDraftTask = null;
+    });
+    return this.localDraftTask;
+  }
+
+  private async persistLocalTextDraftNow(): Promise<boolean> {
+    try {
+      const generation = this.localDraftGeneration;
+      const model = JSON.parse(JSON.stringify(this.draftModel)) as DraftModel;
+      const action = this.getDraftActionData([]);
+      action.isNewMsg = true;
+      action.telephone = this.strContactsNumber;
+      action.selectContacts = JSON.parse(JSON.stringify(this.getSelectContacts())) as selectContactType[];
+      action.receiveContactValue = this.receiveContactValue;
+      model.actionData = action;
+      const current = (): boolean => this.canPersistLocalTextDraft() &&
+        this.localDraftGeneration === generation && this.textValue === action.content &&
+        this.receiveContactValue === action.receiveContactValue &&
+        JSON.stringify(this.getSelectContacts()) === JSON.stringify(action.selectContacts);
+      const result = await DraftUtils.getInstance().persistLocalTextDraft(this.context, model,
+        this.localDraftMessageId, this.localDraftTelephone, current);
+      if (!current()) {
+        return false;
+      }
+      if (result.invalidated) {
+        this.stopLocalTextDraft();
+        return false;
+      }
+      if (!result.saved && result.msgId <= 0) {
+        return false;
+      }
+      const oldThreadId = this.threadId;
+      this.threadId = result.threadId;
+      this.selectContactsMap.set(this.threadId, action.selectContacts);
+      if (oldThreadId !== this.threadId) {
+        this.selectContactsMap.delete(oldThreadId);
+      }
+      this.localDraftMessageId = result.msgId;
+      this.localDraftTelephone = result.telephone;
+      this.draftGroupId = result.groupId;
+      this.isDraft = result.msgId > 0;
+      this.draftContent = result.storedText;
+      // Refresh this editor, rather than the unrelated global ConversationController.
+      this.draftModel.initialDraftText = result.storedText;
+      this.draftModel.isHasSetValueForInitialDraftText = true;
+      this.draftModel.initialSelectContacts = action.selectContacts;
+      this.draftModel.hasGetContactsThreadID = this.threadId;
+      this.draftModel.isHasGetContacts = true;
+      this.draftModel.actionData = action;
+      if (result.saved) {
+        HiLog.i(TAG, 'local text draft committed');
+      }
+      return result.saved;
+    } catch (error) {
+      HiLog.e(TAG, 'local text draft did not commit');
+      return false;
+    }
+  }
+
+  setDraftModel(callback: Function, isNeedToSetNull: boolean = true): void {
+    if (this.localDraftTask !== null) {
+      this.localDraftTask.then((): void => { this.setDraftModel(callback, isNeedToSetNull); });
+      return;
+    }
     if (this.timeoutID >= 0) {
       clearInterval(this.timeoutID)
       this.timeoutID = -1
@@ -1629,6 +1740,10 @@ export default class CreateNewConversationViewModle {
   }
 
   async deleteDraftDataByThread() {
+    if (this.localDraftTask !== null) {
+      await this.localDraftTask;
+    }
+    this.stopLocalTextDraft();
     HiLog.i(TAG, 'deleteDraftDataByThread: threadId is:' + this.threadId);
     let threadIds: number[] = [this.threadId];
     let actionData: Record<string, number | number[]> = {
@@ -1952,6 +2067,10 @@ export default class CreateNewConversationViewModle {
   }
 
   async jumpToConversationPage(isNeedSend: boolean, isNeedsendAudio: boolean, isRCS: boolean) {
+    if (this.localDraftTask !== null) {
+      await this.localDraftTask;
+    }
+    this.stopLocalTextDraft();
     GlobalContext.getContext().setObject('isFromNewCreatMessage', true)
     HiLog.i(TAG, 'jumpToConversationPage')
     this.isSend = true; //用于草稿逻辑

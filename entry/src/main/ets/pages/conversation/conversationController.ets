@@ -1,3 +1,4 @@
+import { SendDataAttachment } from '../../utils/SendDataAttachment';
 /**
  * Copyright (c) 2022-2023 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -242,6 +243,7 @@ export interface TransmitInfoType {
 }
 
 export interface TransmitSourceType {
+    sharedAttachmentLease?: string
     threadId: number
     strContactsName: string
     strContactsNumber: string
@@ -3519,7 +3521,22 @@ export default class ConversationController {
                 }
             }
         });
-        mmsSource = this.createNewSourcePath(context, mmsSource, isSource, transmitContent, isOriginalMms);
+        if (params.sharedAttachmentLease) {
+            // Only an explicit original recipient confirmation reserves the
+            // lease. Copy using the strict full-byte path before old send code.
+            try {
+                if (mmsSource.length !== 1 || mmsSource[0].mms.length !== 1) {
+                    throw new Error('Shared attachment draft changed');
+                }
+                mmsSource[0].mms = [SendDataAttachment.handoff(params.sharedAttachmentLease, context)];
+            } catch (error) {
+                SendDataAttachment.cancel(params.sharedAttachmentLease, true);
+                HiLog.e(TAG, 'Shared attachment handoff failed: ' + (error as Error).message);
+                return; // Never call the existing send path with an empty copy.
+            }
+        } else {
+            mmsSource = this.createNewSourcePath(context, mmsSource, isSource, transmitContent, isOriginalMms);
+        }
         this.delayTransmitMmsSend(context, mmsSource, isOriginalMms);
     }
 

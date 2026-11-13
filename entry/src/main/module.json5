@@ -73,6 +73,20 @@
         ],
         "skills": [
           {
+            "actions": ["ohos.want.action.sendData"],
+            "uris": [{"type":"image/png","scheme":"file"},{"type":"image/jpeg","scheme":"file"},{"type":"image/gif","scheme":"file"},{"type":"image/bmp","scheme":"file"},{"type":"audio/mpeg","scheme":"file"},{"type":"audio/wav","scheme":"file"},{"type":"video/mp4","scheme":"file"},{"type":"text/vcard","scheme":"file"}]
+          },
+          {
+            "actions": [
+              "ohos.want.action.sendData"
+            ],
+            "uris": [
+              {
+                "type": "text/plain"
+              }
+            ]
+          },
+          {
             "entities": [
               'entity.system.home'
             ],

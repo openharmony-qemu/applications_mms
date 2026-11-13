@@ -19,7 +19,7 @@ import ConversationController, {
   mmsListType, selectContactType } from '../pages/conversation/conversationController';
 import { GlobalContext } from '../MainAbility/GlobalHelper';
 import LooseObject from '../data/LooseObject';
-import ConversationListService from '../service/ConversationListService';
+import ConversationListService, { LocalTextDraftResult } from '../service/ConversationListService';
 import common from '../data/commonData';
 import commonData from '../data/commonData';
 import HiLog from './HiLog';
@@ -29,6 +29,7 @@ import { Context } from '@kit.AbilityKit';
 import Constant from '../data/Constant';
 import { display } from '@kit.ArkUI';
 import DeviceUtil from './DeviceUtil';
+import TelephoneUtil from './TelephoneUtil';
 import { isMmsMapMessageByMmsListType } from './MmsUtil';
 
 export class ActionData {
@@ -119,6 +120,22 @@ export class DraftUtils {
       DraftUtils._instance = new DraftUtils()
     }
     return DraftUtils._instance
+  }
+
+  // Only the explicit wide-screen Back path opts in. Legacy draft callers are unchanged.
+  public persistLocalTextDraft(context: Context, model: DraftModel, expectedMsgId: number,
+    expectedTelephone: string, stillCurrent: () => boolean): Promise<LocalTextDraftResult> {
+    const action = model.actionData;
+    const contacts = action.selectContacts;
+    const telephone = action.receiveContactValue || (contacts.length === 1 ? contacts[0].telephone : '');
+    const blank = action.content === '' && !action.isDraft && expectedMsgId === 0;
+    if (!stillCurrent() || action.isMms || action.mmsSource.length !== 0 || contacts.length > 1 ||
+      (!blank && !TelephoneUtil.isPhoneNumber(telephone))) {
+      return Promise.resolve<LocalTextDraftResult>({ saved: false, threadId: 0, groupId: 0, msgId: 0, telephone: '',
+        storedText: '', invalidated: false });
+    }
+    return ConversationListService.getInstance().persistLocalTextDraft(action, expectedMsgId,
+      expectedTelephone, model.initialDraftText, stillCurrent, context);
   }
 
   // 是否需要保存草稿

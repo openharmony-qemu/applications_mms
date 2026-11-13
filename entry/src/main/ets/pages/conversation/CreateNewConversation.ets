@@ -487,6 +487,7 @@ export struct CreateNewConversation {
   }
 
   aboutToDisappear(): void {
+    this.mCreateNewConversationViewModle.stopLocalTextDraft();
     this.inputMethodSetting.off('imeShow', this.emitterKeyboard);
     this.mCreateNewConversationViewModle.removeAirPlaneMode();
     this.mCreateNewConversationViewModle.removeSatelliteMode();
@@ -530,9 +531,33 @@ export struct CreateNewConversation {
     AudioPlayerService.setAudioFilePlayState(undefined, 'stopped');
     this.resetTitle();
     if (AppStorage.get('curBp') as string !== common.STR.DEVICE_MOBILE_PHONE) {
+      if (this.mCreateNewConversationViewModle.canPersistLocalTextDraft()) {
+        this.persistLocalTextDraftAndBackground();
+        return true;
+      }
       return false;
     }
     return this.mCreateNewConversationViewModle.onBackPress(this.context);
+  }
+
+  private async persistLocalTextDraftAndBackground(): Promise<void> {
+    const model = this.mCreateNewConversationViewModle;
+    if (model.localDraftSaving) {
+      return;
+    }
+    try {
+      if (await model.persistLocalTextDraft()) {
+        // Consume Back until the actual message row and session have committed.
+        if (model === this.mCreateNewConversationViewModle && model.canPersistLocalTextDraft()) {
+          await this.context.moveAbilityToBackground();
+        }
+      } else {
+        promptAction.showToast({ message: $r('app.string.failed') });
+      }
+    } catch (error) {
+      HiLog.e(TAG, 'local draft background request failed');
+      promptAction.showToast({ message: $r('app.string.failed') });
+    }
   }
 
   @Builder
@@ -1323,6 +1348,7 @@ export struct CreateNewConversation {
     .onShown(() => {
       this.destinationShow();
     })
+    .enabled(!this.mCreateNewConversationViewModle.localDraftSaving)
     .onBackPressed(() => {
       return this.destinationBackPress();
     })
@@ -1650,6 +1676,9 @@ export struct CreateNewConversation {
   }
 
   windowStageEventTypeChange() {
+    if (this.mCreateNewConversationViewModle.skipPausedDraftSave()) {
+      return;
+    }
     if (this.windowStageEventType === window.WindowStageEventType.PAUSED) {
       // 保存草稿
       this.mCreateNewConversationViewModle.setDraftModel(() => {

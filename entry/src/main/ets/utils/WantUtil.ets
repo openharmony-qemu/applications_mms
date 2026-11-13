@@ -36,8 +36,28 @@ import ConversationListResponse from '../model/conversationlist/ConversationList
 import { IWantHelper, WantMaster } from './WantUtilTools';
 import { BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import ConversationController from '../pages/conversation/conversationController';
+import promptAction from '@ohos.promptAction';
+import { SendDataPayload } from './SendDataPayload';
+import { SendDataAttachment, SharedAttachment } from './SendDataAttachment';
 
 const TAG = 'WantUtil';
+
+interface SharedFileTransmitContent {
+  content: string;
+  isMsm: boolean;
+  mms: Mms[];
+  contentInfo: string;
+  contentType: number;
+}
+
+interface SharedFileTransmitParam {
+  transmitContent: string;
+  transmitContentDetail: string;
+  isRcs: boolean;
+  transmitContentList: SharedFileTransmitContent[];
+  mmsStatus: number;
+  sharedAttachmentLease: string;
+}
 
 export class AbilityWant {
   deviceId: string = '';
@@ -237,6 +257,7 @@ class NotificationWantHelper {
   }
 }
 export class WantUtil {
+  private shareGeneration: number = 0;
   public timeOutIdOfHideIndexPage: null | number = null;
   getWant(context: Context, pageInfos: NavPathStack) {
     HiLog.i(TAG, 'getWant start:');
@@ -246,6 +267,14 @@ export class WantUtil {
     }
     let abilityWant: AbilityWant = GlobalContext.getContext().getObject('abilityWant') as AbilityWant;
     GlobalContext.getContext().setObject('abilityWant', null)
+    const generation: number = ++this.shareGeneration;
+    abilityWant.parameters = abilityWant.parameters ?? {};
+    if (this.handleFileSendData(context, abilityWant, pageInfos, generation)) {
+      return;
+    }
+    if (this.handlePlainSendData(abilityWant, pageInfos, generation)) {
+      return;
+    }
     HiLog.i(TAG, 'ohos.aafwk.param.callerAbilityName: ' + JSON.stringify(abilityWant.parameters['ohos.aafwk.param.callerAbilityName']));
     HiLog.i(TAG, 'ohos.aafwk.param.callerBundleName: ' + JSON.stringify(abilityWant.parameters['ohos.aafwk.param.callerBundleName']));
     HiLog.i(TAG, 'ohos.aafwk.param.callerPid: ' + JSON.stringify(abilityWant.parameters['ohos.aafwk.param.callerPid']));
@@ -379,6 +408,67 @@ export class WantUtil {
       AppStorage.setOrCreate('isHideIndexPage', false);
       EnhancedInfoTemporaryDataSource.getInstance().isHideIndexPage = false;
     }, 2000);
+  }
+
+  private handleFileSendData(context: Context, want: AbilityWant, pageInfos: NavPathStack, generation: number): boolean {
+    let item: SharedAttachment | undefined;
+    try {
+      item = SendDataAttachment.stage(context, want);
+    } catch (error) {
+      HiLog.e(TAG, 'Cannot import shared file: ' + (error as Error).message);
+      promptAction.showToast({ message: '无法读取分享附件，未创建消息' });
+      return true;
+    }
+    if (item === undefined) { return false; }
+    const owned: SharedAttachment = item;
+    const attachment: Mms = { duration: '', type: owned.type, path: owned.path,
+      name: 'source.' + owned.suffix, size: owned.size.toString() };
+    const attachments: Mms[] = [attachment];
+    const content: SharedFileTransmitContent = { content: '', isMsm: true, mms: attachments,
+      contentInfo: '', contentType: 0 };
+    const contents: SharedFileTransmitContent[] = [content];
+    const param: SharedFileTransmitParam = { transmitContent: '', transmitContentDetail: '', isRcs: false,
+      transmitContentList: contents, mmsStatus: commonData.TRANSMIT_MSG_STATUS.SHARE_MMS,
+      sharedAttachmentLease: owned.id };
+    DynamicLoader.getInstance().fire('TransmitMsg').then(() => {
+      if (generation !== this.shareGeneration) { SendDataAttachment.cancel(owned.id); return; }
+      AppStorage.setOrCreate('isSettingShow', false);
+      pageInfos.pushPathByName('TransmitMsg', param);
+    }).catch((error: Error) => {
+      SendDataAttachment.cancel(owned.id);
+      HiLog.e(TAG, 'Cannot open shared-file draft: ' + error.message);
+      promptAction.showToast({ message: '无法打开附件草稿，未发送消息' });
+    });
+    return true;
+  }
+
+  private handlePlainSendData(want: AbilityWant, pageInfos: NavPathStack, generation: number): boolean {
+    let text: string | undefined;
+    try {
+      text = SendDataPayload.text(want);
+    } catch (error) {
+      HiLog.e(TAG, 'Invalid text sendData: ' + (error as Error).message);
+      promptAction.showToast({ message: '分享内容无效，未创建消息' });
+      return true;
+    }
+    if (text === undefined) {
+      return false;
+    }
+    // Open the existing recipient/draft UI. Receiving an intent never sends SMS.
+    const param = this.buildThirdParam({ content: text });
+    DynamicLoader.getInstance().fire('TransmitMsg').then(() => {
+      if (generation !== this.shareGeneration) {
+        return;
+      }
+      AppStorage.setOrCreate('isSettingShow', false);
+      pageInfos.pushPathByName('TransmitMsg', param);
+    }).catch((error: Error) => {
+      if (generation === this.shareGeneration) {
+        HiLog.e(TAG, 'Cannot open shared-text draft: ' + error.message);
+        promptAction.showToast({ message: '无法打开消息草稿，未发送消息' });
+      }
+    });
+    return true;
   }
 
   // deepLink 网页url跳转短信

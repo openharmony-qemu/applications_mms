@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Harmony Contrib
+# SPDX-License-Identifier: Apache-2.0
+import("//build/ohos.gni")
+
+# Compile the real SMS draft UI. GN signs with the verified source profile.
+ohos_app("mms_hap") {
+  deps = []
+  certificate_profile = "signature/mms.p7b"
+  hap_name = "Mms"
+  part_name = "prebuilt_hap"
+  subsystem_name = "applications"
+  module_install_dir = "app/com.ohos.mms"
+  sdk_home = "//prebuilts/ohos-sdk/linux"
+  sdk_type_name = [ "sdk.dir" ]
+  assemble_type = "assembleHap"
+  build_level = "module"
+  build_modules = [ "entry" ]
+  js_build_mode = "release"
+}

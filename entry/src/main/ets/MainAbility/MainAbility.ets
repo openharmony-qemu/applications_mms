@@ -1,3 +1,4 @@
+import { SendDataAttachment } from '../utils/SendDataAttachment';
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2024-2025. All rights reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -104,6 +105,7 @@ export default class MainAbility extends Ability {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hiTraceMeter.startTrace(TraceConstant.TRACE_MAINABILITY_CREATE, TraceConstant.TRACE_MAINABILITY_CREATE_ID);
     HiLog.iw(TAG, 'Ability onCreate com.ohos.mms');
+    SendDataAttachment.recover(this.context);
     if (AppStorage.get('receiveSessionArray') === undefined){
       AppStorage.setOrCreate('receiveSessionArray', []);
     }
@@ -490,6 +492,7 @@ export default class MainAbility extends Ability {
 
   onDestroy(): void {
     HiLog.i(TAG, 'Ability onDestroy');
+    SendDataAttachment.dispose();
     // 骚扰拦截列表页面是否在前台显示值在ability 销毁时兜底置为false.防止一直为true收不到骚扰拦截信息通知
     SharedPreferencesUtils.saveToPreferences('blockedNotificationIsShow', false);
     GlobalContext.getContext().setObject('abilityStatus', 'onDestroy');

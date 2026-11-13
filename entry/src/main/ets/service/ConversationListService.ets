@@ -48,6 +48,16 @@ import FileUtils from '../utils/FileUtils';
 
 const TAG = 'ConversationListService';
 
+export interface LocalTextDraftResult {
+  saved: boolean;
+  threadId: number;
+  groupId: number;
+  msgId: number;
+  telephone: string;
+  storedText: string;
+  invalidated: boolean;
+}
+
 export class ChangeIdInfo {
   public delIdArr: string[] = [];
   public updateIdArr: string[] = [];
@@ -931,6 +941,186 @@ export default class ConversationListService {
    * @param valueBucket New Data
    * @callback callback
    */
+  private localTextDraftTail: Promise<void> = Promise.resolve();
+
+  public async persistLocalTextDraft(actionData: LooseObject, expectedMsgId: number,
+    expectedTelephone: string, previousText: string, stillCurrent: () => boolean,
+    context: Context): Promise<LocalTextDraftResult> {
+    const previous = this.localTextDraftTail;
+    let finish: () => void = () => {};
+    this.localTextDraftTail = new Promise<void>(resolve => { finish = resolve; });
+    await previous;
+    try {
+      return await this.writeLocalTextDraft(actionData, expectedMsgId, expectedTelephone,
+        previousText, stillCurrent, context);
+    } finally {
+      finish();
+    }
+  }
+
+  private async writeLocalTextDraft(action: LooseObject, expectedMsgId: number,
+    expectedTelephone: string, previousText: string, stillCurrent: () => boolean,
+    context: Context): Promise<LocalTextDraftResult> {
+    const failed: LocalTextDraftResult = { saved: false, threadId: 0, groupId: 0, msgId: 0, telephone: '', storedText: '', invalidated: false };
+    const service = ConversationService.getInstance();
+    const param = this.dealSendResults(action);
+    const telephone = param.telephone as string;
+    if (!stillCurrent() || (expectedMsgId > 0 && telephone !== expectedTelephone)) {
+      return failed;
+    }
+    if (action.content === '' && !action.isDraft && expectedMsgId === 0) {
+      return { saved: true, threadId: action.threadId, groupId: 0, msgId: 0, telephone: telephone,
+        storedText: '', invalidated: false };
+    }
+    const session = await new Promise<LooseObject>(resolve => {
+      this.querySessionByTelephone(telephone, resolve, context);
+    });
+    if (session.code !== common.int.SUCCESS || !stillCurrent()) {
+      return failed;
+    }
+    let threadId: number = session.response?.id ?? 0;
+    if (action.threadId > 0 && action.threadId !== threadId) {
+      failed.invalidated = true;
+      return failed; // A deleted/replaced session is never recreated from an old editor.
+    }
+    let drafts: LooseObject[] = [];
+    if (threadId > 0) {
+      const rows = await service.querySmsMmsInfoByConditionAsync(context,
+        { threadId: threadId, msgState: common.int.SEND_DRAFT });
+      if (rows.code !== common.int.SUCCESS || !stillCurrent()) {
+        return failed;
+      }
+      drafts = rows.abilityResult as LooseObject[];
+    }
+    let msgId = expectedMsgId;
+    let groupId: number = 0;
+    if (drafts.length > 0) {
+      const row = drafts[0];
+      if (drafts.length !== 1 || row.msgType !== common.MSG_TYPE.NORMAL || row.rcsId > 0 ||
+        row.msgContent !== previousText ||
+        (msgId > 0 ? row.msgId !== msgId : !action.isDraft || row.groupId !== action.groupId)) {
+        failed.invalidated = true;
+        return failed; // Do not replace an unknown or more recent draft.
+      }
+      msgId = row.msgId;
+      groupId = row.groupId;
+    } else if (msgId > 0 || action.isDraft) {
+      failed.invalidated = true;
+      return failed; // Already deleted/sent: no insert fallback.
+    }
+    if (msgId > 0) {
+      const condition: LooseObject = {
+        threadId: threadId, msgId: msgId, groupId: groupId, msgState: common.int.SEND_DRAFT
+      };
+      if (!stillCurrent()) {
+        return failed;
+      }
+      const changed = await new Promise<LooseObject>(resolve => {
+        if (action.content === '') {
+          service.deleteSmsInfoByCondition(context, condition, resolve);
+        } else {
+          service.updateSmsMmsInfoByCondition(context, condition,
+            { msg_content: action.content, start_time: String(Date.now()) }, resolve);
+        }
+      });
+      if (changed.code !== common.int.SUCCESS || Number(changed.abilityResult) !== 1 || !stillCurrent()) {
+        if (changed.code === common.int.SUCCESS && Number(changed.abilityResult) === 0) {
+          failed.invalidated = true;
+        }
+        return failed;
+      }
+      if (action.content === '') {
+        const latest = await new Promise<LooseObject>(resolve => {
+          service.queryMessageDetailAll(context, {
+            actionDataName: Constant.ACTION_DATA_NAME_QUERY_SMS_MMS_INFO_ALL,
+            threadId: threadId, page: 1, contactsNum: 1
+          }, resolve, 0);
+        });
+        if (latest.code !== common.int.SUCCESS || !stillCurrent()) {
+          return failed;
+        }
+        const messages = (latest.response as mmsListType[]).filter(item => item.sendStatus !== common.int.SEND_DRAFT);
+        const cleared = await new Promise<LooseObject>(resolve => {
+          this.updateLastItemContent({ threadId: threadId, mmsList: messages }, resolve,
+            context, true, session.response.messageCount);
+        });
+        if (cleared.code !== common.int.SUCCESS || Number(cleared.abilityResult) !== 1 || !stillCurrent()) {
+          return failed;
+        }
+        return { saved: true, threadId: threadId, groupId: 0, msgId: 0, telephone: telephone,
+          storedText: '', invalidated: false };
+      }
+    } else {
+      if (!stillCurrent()) {
+        return failed;
+      }
+      if (threadId <= 0) {
+        const created = await new Promise<LooseObject>(resolve => {
+          this.insertSession({ telephone: telephone, content: param.content, contacts_num: param.contactsNum,
+            sms_type: param.smsType, unread_count: 0, sending_status: common.int.SEND_MESSAGE_SENDING,
+            has_draft: common.has_draft.HAVE, time: param.timestamp, has_mms: 0, has_attachment: 0,
+            contact_id: action.selectContacts.map((item: selectContactType) => item.rawContactId || '').join(','),
+            contact_name: action.selectContacts.map((item: selectContactType) => item.contactName || item.telephone).join(',')
+          }, resolve, context);
+        });
+        if (created.code !== common.int.SUCCESS || Number(created.abilityResult) <= 0 || !stillCurrent()) {
+          return failed;
+        }
+        threadId = Number(created.abilityResult);
+      }
+      const maximum = await new Promise<LooseObject>(resolve => service.queryMaxGroupIdInMmsInfoTable(resolve, context));
+      if (maximum.code !== common.int.SUCCESS || !Number.isSafeInteger(Number(maximum.abilityResult)) ||
+        Number(maximum.abilityResult) < 0 || !stillCurrent()) {
+        return failed;
+      }
+      if (!Number.isSafeInteger(service.maxGroupId) ||
+        !Number.isSafeInteger(Math.max(service.maxGroupId, Number(maximum.abilityResult)) + 1)) {
+        return failed;
+      }
+      service.maxGroupId = Math.max(service.maxGroupId, Number(maximum.abilityResult)) + 1;
+      groupId = service.maxGroupId;
+      const inserted = await new Promise<LooseObject>(resolve => {
+        service.insertMessageDetailByMaxGroupId(param, action, threadId, groupId, resolve, context);
+      });
+      if (inserted.initDatas?.length !== 1 || Number(inserted.initDatas[0].id) <= 0) {
+        return failed;
+      }
+      msgId = Number(inserted.initDatas[0].id);
+    }
+    const identity: LooseObject = {
+      threadId: threadId, msgId: msgId, groupId: groupId, msgState: common.int.SEND_DRAFT
+    };
+    const actual = await service.querySmsMmsInfoByConditionAsync(context, identity);
+    if (actual.code !== common.int.SUCCESS) {
+      return failed;
+    }
+    const stored = actual.abilityResult as LooseObject[];
+    if (stored.length !== 1 || stored[0].msgContent !== action.content) {
+      failed.invalidated = true;
+      return failed;
+    }
+    // Retain proven ownership even if the subsequent session update fails, so
+    // retry updates this exact row instead of inserting a duplicate.
+    failed.threadId = threadId;
+    failed.groupId = groupId;
+    failed.msgId = msgId;
+    failed.telephone = telephone;
+    failed.storedText = action.content;
+    if (!stillCurrent()) {
+      return failed;
+    }
+    const committed = await new Promise<LooseObject>(resolve => {
+      this.updateSessionByCondition(context, { threadId: threadId }, {
+        content: action.content, has_draft: common.has_draft.HAVE, time: Date.now(), has_attachment: 0, has_mms: 0
+      }, resolve, true);
+    });
+    if (committed.code !== common.int.SUCCESS || Number(committed.abilityResult) !== 1 || !stillCurrent()) {
+      return failed;
+    }
+    return { saved: true, threadId: threadId, groupId: groupId, msgId: msgId, telephone: telephone,
+      storedText: action.content, invalidated: false };
+  }
+
   public insertSessionDraft(actionData: LooseObject, callback: Function, context: Context): void {
     let param = this.dealSendResults(actionData);
     if (actionData.selectContacts && actionData.selectContacts.length > 0) {

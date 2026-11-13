@@ -33,8 +33,10 @@ import { contact } from '@kit.ContactsKit';
 import { BusinessError } from '@ohos.base';
 import { DraftUtils } from '../../utils/DraftUtils';
 import DeviceUtil from '../../utils/DeviceUtil';
+import { SendDataAttachment } from '../../utils/SendDataAttachment';
 
 class Params {
+    sharedAttachmentLease: string = '';
     threadId: number = -1
     doubleCard: boolean = false
     transmitContent: string = ''
@@ -188,6 +190,7 @@ export default class TransmitMsgController {
     private conversationController: ConversationController = ConversationController.getInstance();
     private mMAttachmentAreaController: MMAttachmentAreaController = MMAttachmentAreaController.getInstance();
     public isRcs: boolean = false;
+    public sharedAttachmentLease: string = '';
     public isPC: boolean = DeviceUtil.isPC()
 
     static getInstance() {
@@ -206,6 +209,7 @@ export default class TransmitMsgController {
         let params: Params = this.isPC && transmitData ? transmitData :
             this.pageInfos.getParamByIndex(this.pageInfos.size() - 1) as Params;
         HiLog.i(TAG, 'onInit enter');
+        this.sharedAttachmentLease = params?.sharedAttachmentLease ?? '';
         this.dialogMsg.transmitContent = params?.transmitContent;
         this.threadId = params.threadId;
         this.transmitDialogController = transmitDialogController;
@@ -404,6 +408,7 @@ export default class TransmitMsgController {
 
     transmit(value: boolean, isTransmit: boolean): void {
         let params: Record<string, number | boolean | string | LooseObject[] | Record<number, string>> = {
+            'sharedAttachmentLease': this.sharedAttachmentLease,
             'threadId': this.threadId,
             'strContactsName': this.dialogMsg?.contactsParam?.contactName, //Contact Name
             'strContactsNumber': this.dialogMsg?.contactsParam?.telephone, //Mobile phone number
@@ -418,8 +423,14 @@ export default class TransmitMsgController {
             'contactsNum': this.contactsNum,
         }
         GlobalContext.getContext().setObject('transmitFlag', isTransmit)
-        this.pageInfos.pop();
-        this.pageInfos.replacePathByName('Conversation', params);
+        SendDataAttachment.reserve(this.sharedAttachmentLease);
+        try {
+            this.pageInfos.pop();
+            this.pageInfos.replacePathByName('Conversation', params);
+        } catch (error) {
+            SendDataAttachment.cancel(this.sharedAttachmentLease, true);
+            throw error as Error;
+        }
     }
 
     jumpToSearchContact() {

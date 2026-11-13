@@ -1,3 +1,4 @@
+import { SendDataAttachment } from '../../utils/SendDataAttachment';
 /**
  * Copyright (c) 2022 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -175,6 +176,10 @@ export default struct TransmitMsg {
     }
 
     destinationDisappear() {
+        // Search/contact overlays retain TransmitMsg in the stack.
+        if (!this.pageInfos.getAllPathName().includes('TransmitMsg')) {
+            SendDataAttachment.cancel(this.mTransmitMsgCtrl.sharedAttachmentLease);
+        }
     }
 
     destinationShow() {
@@ -190,12 +195,22 @@ export default struct TransmitMsg {
 
     destinationBackPress() {
         GlobalContext.getContext().setObject('notUpdateData', true)
+        SendDataAttachment.cancel(this.mTransmitMsgCtrl.sharedAttachmentLease);
         this.pageInfos.pop();
     }
 
     build() {
         NavDestination() {
             Column() {
+                if (this.mTransmitMsgCtrl.dialogMsg.transmitContent !== '') {
+                    Text(this.mTransmitMsgCtrl.dialogMsg.transmitContent).id('mms-senddata-text')
+                    Button('取消文本草稿').id('mms-senddata-text-cancel').onClick(() => this.destinationBackPress())
+                }
+                if (this.mTransmitMsgCtrl.sharedAttachmentLease !== '') {
+                    Text(SendDataAttachment.description(this.mTransmitMsgCtrl.sharedAttachmentLease))
+                        .id('mms-senddata-attachment')
+                    Button('取消附件草稿').id('mms-senddata-cancel').onClick(() => this.destinationBackPress())
+                }
                 Row() {
                     Search({ value: '', placeholder: $r('app.string.searchHit') })
                         .width('100%')
